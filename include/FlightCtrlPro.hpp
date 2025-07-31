@@ -26,27 +26,54 @@
 #include <flight_ctrl/SetDebugTarget.h>
 #include <flight_ctrl/TriggerShutdown.h>
 #include "pid.hpp"
-
+#include <bitset>
+#include <boost/crc.hpp>
+#include <boost/filesystem.hpp>
 #include <dynamic_reconfigure/server.h>
 #include <flight_ctrl/PidGainsConfig.h>
+
+
+struct wayPoints
+{
+    //Eigen::Vector2d xy_grid;
+    Eigen::Vector4d xyzy_map;
+    double hover_time;
+};
+
+struct flyPath
+{
+    std::string hash;
+    int steps;
+    std::vector<wayPoints> waypoints_;
+};
 
 /*MissionManager类设计 主要关注任务的切换，扩展*/
 class MissionManager 
 {
 private:
-    std::vector<Eigen::Vector4d> waypoints_;
+    flyPath fpath;
     int current_index;
     int current_mission_id;
+    std::bitset<63> noFlyBitmap; //位图表示法：63位对应9x7网格（0=可飞，1=禁飞）
+    //std::set<int> noFlyIndices; //网格索引集合：存储禁飞区AnBm对应的线性索引
 
 public:
     MissionManager(); 
     ~MissionManager();
-    bool loadMission(const int& misssion_id);   
+    bool loadMission(const std::string& hash);   
     const Eigen::Vector4d& getCurrentWaypoint();
     int getCurrentIndex();
     void nextWaypoint();
     bool isFinished();
     void reset();
+    std::pair<int, int> ab2Grid(const std::string& ab);
+    int grid2Idx(const std::pair<int, int>& g);
+    Eigen::Vector2d grid2Map(int i, int j);
+    std::pair<int, int> mapToGrid(const Eigen::Vector3d& map_pos);
+    std::bitset<63>& setNoFlyZones(const std::vector<std::string>& zones);  //设计禁飞区并且返回位图
+    std::string getBitmapHash(const std::bitset<63>& bs) const; //计算哈希值
+
+
 };
 
 /* MapMotion类的设计，构造map坐标系,负责处理坐标系转化问题，以及控制量计算*/

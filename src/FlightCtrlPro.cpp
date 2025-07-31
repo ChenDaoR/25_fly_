@@ -292,60 +292,86 @@ void MapMotion::dy_pid_Callback(flight_ctrl::PidGainsConfig &config,uint32_t lev
                             config.yaw_d_filter_value);
 }
 
+Eigen::Vector2d MissionManager::grid2Map(int i, int j)
+{
+    // 网格中心为原点：横向索引i∈[0,8], 纵向索引j∈[0,6]
+    double x = (i - 4) * 0.5; // 1网格=50cm=0.5m，中心偏移
+    double y = (j - 3) * 0.5; 
+    return Eigen::Vector2d(x, y); 
+}
+
+std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
+{
+    int i = static_cast<int>(std::round(map_pos.x() * 2 + 4));
+    int j = static_cast<int>(std::round(map_pos.y() * 2 + 3));
+    return {i, j};
+}
+
+
 MissionManager::MissionManager(){}
 
 MissionManager::~MissionManager(){}
 
-bool MissionManager::loadMission(const int& mission_id)
+bool MissionManager::loadMission(const std::string& hash)
 {
-    std::ifstream file("/home/feng/Myothers/config/missions.json");
-    if (!file.is_open())
+    // 1. 拼出完整文件名
+    const std::string mission_dir = "/home/feng/Code/find_path/output";          // 可换成 ros::package::getPath 等
+    const std::string file_path  = mission_dir + "/" + hash + ".json";
+
+    /* 2. 打开文件 */
+    std::ifstream ifs(file_path);
+    if (!ifs.is_open())
     {
-        ROS_ERROR("[MISSION] Failed to open config/missions.json");
+        ROS_ERROR("[MissionManager] Cannot open mission file: %s", file_path.c_str());
         return false;
     }
 
-    nlohmann::json j;
     try
     {
-        file >> j;
+        /* 3. 解析 JSON */
+        nlohmann::json j;
+        ifs >> j;
+
+        /* 4. 清空旧数据 */
+        fpath.waypoints_.clear();
+
+        fpath.steps = j.at("steps");
+        fpath.hash = hash.c_str();
+
+        /* 6. 读取 path 并转成 map 坐标 waypoint (x,y,z,yaw)
+               约定：z = 1 m；yaw = 0°；分辨率 0.5 m，网格中心为原点
+         */
+        for (const auto& p : j.at("path"))
+        {
+            if (p.size() != 2) continue;
+            int i = p[0].get<int>();   // 行
+            int j = p[1].get<int>();   // 列
+            
+            wayPoints w;
+            w.xyzy_map = Eigen::Vector4d(grid2Map(i,j)(0),grid2Map(i,j)(1),TAKEOFF_HEIGHT,0);
+            w.hover_time = 2;
+            fpath.waypoints_.emplace_back(w);
+        }
+        /* 7. 复位索引 */
+        current_index = 0;
+
+        ROS_INFO("[MissionManager] Loaded mission \"%s\": %zu waypoints, %zu barriers",
+                 hash.c_str(), fpath.waypoints_.size(), j.at("barriers").size());
+        return true;
     }
     catch (const std::exception& e)
     {
-        ROS_ERROR("[MISSION] JSON parse error: %s", e.what());
+        ROS_ERROR("[MissionManager] JSON parse error: %s", e.what());
         return false;
     }
-
-    ROS_INFO("[MISSION] Loaded missions.json, found %lu missions", j["missions"].size());
-
-    for (const auto& mission : j["missions"])
-    {
-        if (mission["id"].get<int>() == mission_id)
-        {
-            current_mission_id = mission_id;
-            waypoints_.clear();
-            ROS_INFO("[MISSION] Loading mission ID %d with %lu waypoints", 
-                     mission_id, mission["waypoints"].size());
-            for (const auto& wp : mission["waypoints"])
-            {
-                waypoints_.push_back(Eigen::Vector4d(wp[0], wp[1], wp[2], wp[3]));
-                ROS_INFO("[MISSION] Waypoint %lu: [%.2f, %.2f, %.2f, %.2f]", waypoints_.size()-1,  wp[0].get<double>(),  wp[1].get<double>(),  wp[2].get<double>(),  wp[3].get<double>());
-            }
-            current_index = 0;
-            return true;
-        }
-    }
-
-    std::cerr << "Mission with id " << mission_id << " not found" << std::endl;
-    return false;
 }
 
 const Eigen::Vector4d& MissionManager::getCurrentWaypoint()
 {
     static Eigen::Vector4d null_waypoint(0.0, 0.0, 0.0, 0.0);
-    if (current_index >= 0 && current_index < waypoints_.size())
+    if (current_index >= 0 && current_index < fpath.steps)
     {
-        return waypoints_[current_index];
+        return fpath.waypoints_[current_index].xyzy_map;
     }
     return null_waypoint;
 }
@@ -357,7 +383,7 @@ int MissionManager::getCurrentIndex()
 
 void MissionManager::nextWaypoint()
 {
-    if (current_index < waypoints_.size())
+    if (current_index < fpath.waypoints_.size())
     {
         current_index++;
     }
@@ -365,12 +391,62 @@ void MissionManager::nextWaypoint()
 
 bool MissionManager::isFinished()
 {
-    return current_index >= waypoints_.size();
+    return current_index >= fpath.waypoints_.size();
 }
 
 void MissionManager::reset()
 {
     current_index = 0;
+}
+
+std::pair<int, int> MissionManager::ab2Grid(const std::string& ab)
+{
+    // 格式验证：必须为4字符（如"A8B1"）
+    if(ab.length() != 4) return {-1, -1};
+    
+    int col = 8 - (ab[1] - '1'); // A9→0, A8→1, ... A1→8
+    int row = ab[3] - '1';       // B1→0, B2→1, ... B7→6
+    return {row, col}; // (i,j)
+}
+
+int MissionManager::grid2Idx(const std::pair<int, int>& g)
+{
+    return g.first * 9 + g.second;
+}
+
+std::bitset<63>& MissionManager::setNoFlyZones(const std::vector<std::string>& zones)
+{
+    for (const auto& code : zones)
+    {
+        int idx = grid2Idx(ab2Grid(code));
+        noFlyBitmap.set(idx, true);
+    }
+    return noFlyBitmap;
+}
+
+std::string MissionManager::getBitmapHash(const std::bitset<63>& bm) const
+{
+    // 1. 取出 63 位对应的 64 位无符号整数
+    uint64_t val = bm.to_ullong();
+
+    // 2. CRC32
+    boost::crc_32_type crc32;
+    crc32.process_bytes(&val, sizeof(val));
+
+    // 3. 转成 Base36
+    uint32_t hash_value = crc32.checksum();
+    const char base36[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    std::string hash_str;
+
+    do
+    {
+        hash_str = base36[hash_value % 36] + hash_str;
+        hash_value /= 36;
+    } while (hash_value);
+
+    // 4. 左侧补零到 8 位
+    hash_str.insert(0, 8 - hash_str.size(), '0');
+    return hash_str;
 }
 
 FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_private)
@@ -411,8 +487,7 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     move.setTimeout(TIMEOUT);
     move.setErr(POS_ERR,YAW_ERR);
 
-    mission_id = MISSION_ID;
-    mission.loadMission(mission_id);
+    mission.loadMission("hash");
 
     last_request = ros::Time::now();
 }
