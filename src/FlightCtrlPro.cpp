@@ -9,6 +9,7 @@
 #define USE_VINS 1
 #define VINS_ERR_THE_POS 10
 #define VINS_ERR_THE_VEL 3
+#define AUTO 1
 
 MapMotion::MapMotion()
 {
@@ -140,17 +141,14 @@ void MapMotion::setStartTime(const ros::Time& time)
     start_time = time;
 }
 
-bool MapMotion::isArrived(const geometry_msgs::PoseStamped& curr_pos_enu)
+bool MapMotion::isArrived(const geometry_msgs::PoseStamped& curr_pos_map)
 {
-     if (hover_flag) return false;
+    if (hover_flag) return false;
 
-    Eigen::Vector3d curr_enu(curr_pos_enu.pose.position.x,
-                             curr_pos_enu.pose.position.y,
-                             curr_pos_enu.pose.position.z);
-    Eigen::Vector3d curr_map = enu2Map_pos(curr_enu);
-
-    double curr_yaw_enu = tf2::getYaw(curr_pos_enu.pose.orientation);
-    double curr_yaw_map = enu2Map_yaw(curr_yaw_enu);
+    Eigen::Vector3d curr_map(curr_pos_map.pose.position.x,
+                             curr_pos_map.pose.position.y,
+                             curr_pos_map.pose.position.z);
+    double curr_yaw_map = tf2::getYaw(curr_pos_map.pose.orientation) * 180.0 / M_PI;
 
     return (target_pos_map - curr_map).norm() < pos_err
     && std::abs(angles::shortest_angular_distance(curr_yaw_map * M_PI / 180.0, target_yaw_map * M_PI / 180.0)) * 180.0 / M_PI< yaw_err;
@@ -484,8 +482,9 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
 
     //move.setTimeout(TIMEOUT);
     move.setErr(POS_ERR,YAW_ERR);
+    flag = 0;
 
-    // std::vector<std::string> zones = {"A5B1", "A6B1", "A7B1"};
+    std::vector<std::string> zones = {"A5B3", "A5B4", "A4B4"};
     std::bitset<63> bm = mission.setNoFlyZones(zones);
     std::string hash = mission.getBitmapHash(bm);
     mission.loadMission(hash);
@@ -602,10 +601,10 @@ bool FlightCore::set_FlightTask_Callback(flight_ctrl::SetFlightTask::Request& re
         res.success = true;
         land_flag = false;
     }
-    else if(s.value == "Emergency")
+    else if(s.value == "M_Land")
     {
-        ROS_INFO("now flight_task is Emergency");
-        FT = Emergency;
+        ROS_INFO("now flight_task is M_Land");
+        FT = M_Land;
         cache_pos = getNowPose();
         res.success = true;
         land_flag = false;
@@ -729,7 +728,7 @@ void FlightCore::cmdloop_Callback()
         case Land: cmd_Task_Land(); break;
         case Interrupt: cmd_Task_Interupt(); break;
         case Debug: cmd_Task_Debug(); break;
-        case Emergency: cmd_Task_Emergency();break;
+        case M_Land: cmd_Task_M_Land();break;
     }
 
     if(!land_flag)  target_velocity_pub.publish(pub_vel);
@@ -759,6 +758,7 @@ void FlightCore::statusloop_Callback()
         else ROS_INFO("Arm Failed");
         last_request = ros::Time::now();
     }
+
 }
 
 void FlightCore::cmd_Task_Standby()
@@ -767,9 +767,10 @@ void FlightCore::cmd_Task_Standby()
     {
         Eigen::Vector3d target_pos(round_(cache_pos.pose.position.x),round_(cache_pos.pose.position.y),round_(cache_pos.pose.position.z));
         double target_yaw = tf2::getYaw(cache_pos.pose.orientation) * 180.0 / M_PI;
-        move.setTarget(target_pos,target_yaw);
+        move.setTarget(target_pos,target_yaw,15);
         is_changed = false;
     }
+
     pub_vel = move.compute(getNowPose());
 }
 
@@ -806,7 +807,24 @@ void FlightCore::cmd_Task_Takeoff(double h)
         move.setTarget(target_pos,target_yaw);
         is_changed = false;
     }
+
     pub_vel = move.compute(getNowPose());
+
+    if(AUTO)
+    {
+        if(move.isArrived(getNowPose()))
+        {
+            ROS_INFO("Takeoff has done!Now change to Mission");
+        }
+        else
+        {
+            if(move.isTimeout(ros::Time::now()))
+            {
+                ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point", mission.getCurrentIndex());
+                mission.nextWaypoint();
+            }
+        }
+    }
 }
 
 void FlightCore::cmd_Task_Mission()
@@ -857,6 +875,13 @@ void FlightCore::cmd_Task_Mission()
         ROS_INFO_THROTTLE(1.0,"[MISSION] Current waypoint index: %d, target: [%.2f, %.2f, %.2f, %.2f ]", 
              mission.getCurrentIndex(), current_wp(0), current_wp(1), current_wp(2), current_wp(3));
     }
+    else
+    {
+        if(AUTO)
+        {
+
+        }
+    }
 
 }
 
@@ -877,7 +902,7 @@ void FlightCore::cmd_Task_Debug()
     pub_vel = move.compute(getNowPose());
 }
 
-void FlightCore::cmd_Task_Emergency()
+void FlightCore::cmd_Task_M_Land()
 {
 }
 

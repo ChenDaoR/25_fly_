@@ -137,7 +137,7 @@ enum FlightTask
     Mission,
     Interrupt,
     Hover,
-    Emergency,
+    M_Land,
     Debug
 };
 
@@ -197,6 +197,8 @@ private:
     int last_index; //任务标记
     double last_pos_z;  //上次z坐标
 
+    int flag;
+
     std::vector<std::string> zones;
 
     MapMotion move;
@@ -220,7 +222,7 @@ private:
     void cmd_Task_Mission();
     void cmd_Task_Interupt();
     void cmd_Task_Debug();
-    void cmd_Task_Emergency();
+    void cmd_Task_M_Land();
 
     double round_(double);  //约数函数
     geometry_msgs::PoseStamped getNowPose();    //获得当前位姿
