@@ -44,14 +44,14 @@ void MapMotion::init(const geometry_msgs::PoseStamped& origin_)
     x.setGains(1,0.05,0);
     x.setDt(1.0 / cmdRate);
     x.setIntegralLimit(0.1);
-    x.setOutputLimit(0,0.2);
+    x.setOutputLimit(0,0.3);
     x.setAdvancedFlag(true,false,false,false);
     x.setAdvancedThreshold(0.2,0,0);
 
     y.setGains(1,0.05,0);
     y.setDt(1.0 / cmdRate);
     y.setIntegralLimit(0.1);
-    y.setOutputLimit(0,0.2);
+    y.setOutputLimit(0,0.3);
     y.setAdvancedFlag(true,false,false,false);
     y.setAdvancedThreshold(0.2,0,0);
 
@@ -321,7 +321,7 @@ bool MissionManager::loadMission(const std::string& hash)
             wayPoints w;
             w.xyzy_map = Eigen::Vector4d(grid2Map(i,j)(0),grid2Map(i,j)(1),TAKEOFF_HEIGHT,0);
             w.hover_time = 1;
-            w.run_time = 2;
+            w.run_time = 3;
             fpath.waypoints_.push_back(w);
         }
         /* 7. 复位索引 */
@@ -432,16 +432,15 @@ std::string MissionManager::getBitmapHash(const std::bitset<63>& bm) const
 
 Eigen::Vector2d MissionManager::grid2Map(int i, int j)
 {
-    // 网格中心为原点：横向索引i∈[0,8], 纵向索引j∈[0,6]
-    double x = (i - 4) * 0.5; // 1网格=50cm=0.5m，中心偏移
-    double y = (j - 3) * 0.5; 
+    double x = i * 0.5; // 1网格=50cm=0.5m，中心偏移
+    double y = j * 0.5; 
     return Eigen::Vector2d(x, y); 
 }
 
 std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
 {
-    int i = static_cast<int>(std::round(map_pos.x() * 2 + 4));
-    int j = static_cast<int>(std::round(map_pos.y() * 2 + 3));
+    int i = static_cast<int>(std::round(map_pos.x() * 2));
+    int j = static_cast<int>(std::round(map_pos.y() * 2));
     return {i, j};
 }
 
@@ -489,15 +488,7 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     std::string hash = mission.getBitmapHash(bm);
     mission.loadMission(hash);
     ROS_INFO("Generated hash: %s", hash.c_str());
-
-    if(AUTO)
-    {
-        FT = Takeoff;
-        cache_pos = getNowPose();
-        is_changed = true;
-        ROS_INFO("AUTO!!Takeoff!");
-    }
-
+    isLaunched = true;
     last_request = ros::Time::now();
 }
 
@@ -767,6 +758,15 @@ void FlightCore::statusloop_Callback()
         last_request = ros::Time::now();
     }
 
+    if(isLaunched && AUTO)
+    {
+        FT = Takeoff;
+        cache_pos = getNowPose();
+        is_changed = true;
+        ROS_INFO("AUTO!!Takeoff!");
+        isLaunched = false;
+    }
+
 }
 
 void FlightCore::cmd_Task_Standby()
@@ -823,6 +823,7 @@ void FlightCore::cmd_Task_Takeoff(double h)
         if(move.isArrived(getNowPose()))
         {
             ROS_INFO("Takeoff has done!Now change to Mission");
+            FT = Mission;
         }
         else
         {
@@ -863,8 +864,8 @@ void FlightCore::cmd_Task_Mission()
 
     if(move.isArrived(getNowPose()))
     {
-        mission.nextWaypoint();
         ROS_INFO("[MISSION]Reached waypoint %d, Moving to next waypoint %d", mission.getCurrentIndex(), mission.getCurrentIndex() + 1);
+        mission.nextWaypoint();
     }
     else
     {
@@ -887,7 +888,7 @@ void FlightCore::cmd_Task_Mission()
     {
         if(AUTO)
         {
-
+            FT = M_Land;
         }
     }
 
@@ -912,6 +913,7 @@ void FlightCore::cmd_Task_Debug()
 
 void FlightCore::cmd_Task_M_Land()
 {
+    
 }
 
 

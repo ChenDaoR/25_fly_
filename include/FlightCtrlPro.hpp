@@ -76,7 +76,7 @@ public:
     std::pair<int, int> mapToGrid(const Eigen::Vector3d& map_pos);
     std::bitset<63>& setNoFlyZones(const std::vector<std::string>& zones);  //设计禁飞区并且返回位图
     std::string getBitmapHash(const std::bitset<63>& bs) const; //计算哈希值
-
+    bool isPathBlocked(const Eigen::Vector3d& start, const Eigen::Vector3d& end);
 
 };
 
@@ -198,6 +198,7 @@ private:
     double last_pos_z;  //上次z坐标
 
     int flag;
+    bool isLaunched;
 
     std::vector<std::string> zones;
 
