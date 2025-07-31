@@ -1,0 +1,4 @@
+float64 duration   # 悬停时间（秒）
+---
+bool success
+string message
