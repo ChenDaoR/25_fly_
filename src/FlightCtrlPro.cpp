@@ -6,10 +6,11 @@
 #define YAW_ERR 0.5
 #define DEFAULT_RUNTIME 0
 #define DEFAULT_HOVERTIME 5
-#define USE_VINS 1
 #define VINS_ERR_THE_POS 10
 #define VINS_ERR_THE_VEL 3
+#define USE_VINS 0
 #define AUTO 1
+#define WAITDURATION 1.5
 
 MapMotion::MapMotion()
 {
@@ -475,7 +476,6 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     rate_count = 0;
 
     last_pos_z = 0;
-
     vins_err_pos_The = VINS_ERR_THE_POS;
     vins_err_vel_The = VINS_ERR_THE_VEL;
     vins_drifted = false;
@@ -489,6 +489,14 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     std::string hash = mission.getBitmapHash(bm);
     mission.loadMission(hash);
     ROS_INFO("Generated hash: %s", hash.c_str());
+
+    if(AUTO)
+    {
+        FT = Takeoff;
+        cache_pos = getNowPose();
+        is_changed = true;
+        ROS_INFO("AUTO!!Takeoff!");
+    }
 
     last_request = ros::Time::now();
 }
@@ -738,7 +746,7 @@ void FlightCore::cmdloop_Callback()
 void FlightCore::statusloop_Callback()
 {
 
-    if(state_cb.mode != "OFFBOARD" && ros::Time::now() - last_request > ros::Duration(3.0))
+    if(state_cb.mode != "OFFBOARD" && ros::Time::now() - last_request > ros::Duration(WAITDURATION))
     {
         ROS_INFO("trying to switch to OFFBOARD");
         if(mode_change_client.call(mode_change_msg) && mode_change_msg.response.mode_sent)
@@ -748,7 +756,7 @@ void FlightCore::statusloop_Callback()
         else ROS_INFO("Offboard Failed : %d",mode_change_msg.response.mode_sent);
         last_request = ros::Time::now();
     }
-    else if(!state_cb.armed && (ros::Time::now() - last_request > ros::Duration(3.0)))
+    else if(!state_cb.armed && (ros::Time::now() - last_request > ros::Duration(WAITDURATION)))
     {
         ROS_INFO("trying to switch to Arm");
         if(arming_request_client.call(arming_request_msgs) && arming_request_msgs.response.success)
