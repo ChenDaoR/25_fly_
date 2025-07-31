@@ -4,11 +4,11 @@
 #define TAKEOFF_HEIGHT 1
 #define POS_ERR 0.1
 #define YAW_ERR 0.5
-#define TIMEOUT 10
-#define MISSION_ID 1
+#define DEFAULT_RUNTIME 0
+#define DEFAULT_HOVERTIME 5
 #define USE_VINS 1
-#define VINS_ERR_THE_POS 1
-#define VINS_ERR_THE_VEL 1
+#define VINS_ERR_THE_POS 10
+#define VINS_ERR_THE_VEL 3
 
 MapMotion::MapMotion()
 {
@@ -107,7 +107,7 @@ Eigen::Vector3d MapMotion::transform(const Eigen::Vector3d& enu_pos)
     return enu2Map_pos(enu_pos);
 }
 
-void MapMotion::setTarget(const Eigen::Vector3d pos,const double yaw_)  //角度
+void MapMotion::setTarget(const Eigen::Vector3d pos,const double& yaw_,const double& time = DEFAULT_RUNTIME)  //角度
 {
     //最终发的是enu坐标系下的速度命令，转到enu坐标系
     Eigen::Vector3d target_pos_enu = map2Enu_pos(pos);
@@ -120,21 +120,9 @@ void MapMotion::setTarget(const Eigen::Vector3d pos,const double yaw_)  //角度
     y.setTarget(target_pos_enu(1));
     z.setTarget(target_pos_enu(2));
     yaw.setTarget(target_yaw_enu);
+    setTimeout(time);
+
 }
-
-// void MapMotion::setTarget(const geometry_msgs::PoseStamped& target_pos)
-// {
-//     Eigen::Vector3d pos(target_pos.pose.position.x,
-//                         target_pos.pose.position.y,
-//                         target_pos.pose.position.z);
-//     Eigen::Vector3d target_pos_enu = map2Enu_pos(pos);
-//     double target_yaw_enu = map2Enu_yaw(tf2::getYaw(target_pos.pose.orientation) * 180.0 / M_PI);
-
-//     x.setTarget(target_pos_enu(0));
-//     y.setTarget(target_pos_enu(1));
-//     z.setTarget(target_pos_enu(2));
-//     yaw.setTarget(target_yaw_enu * 180.0 / M_PI);
-// }
 
 void MapMotion::setErr(const double& pos,const double& yaw_)
 {
@@ -292,22 +280,6 @@ void MapMotion::dy_pid_Callback(flight_ctrl::PidGainsConfig &config,uint32_t lev
                             config.yaw_d_filter_value);
 }
 
-Eigen::Vector2d MissionManager::grid2Map(int i, int j)
-{
-    // 网格中心为原点：横向索引i∈[0,8], 纵向索引j∈[0,6]
-    double x = (i - 4) * 0.5; // 1网格=50cm=0.5m，中心偏移
-    double y = (j - 3) * 0.5; 
-    return Eigen::Vector2d(x, y); 
-}
-
-std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
-{
-    int i = static_cast<int>(std::round(map_pos.x() * 2 + 4));
-    int j = static_cast<int>(std::round(map_pos.y() * 2 + 3));
-    return {i, j};
-}
-
-
 MissionManager::MissionManager(){}
 
 MissionManager::~MissionManager(){}
@@ -349,8 +321,9 @@ bool MissionManager::loadMission(const std::string& hash)
             
             wayPoints w;
             w.xyzy_map = Eigen::Vector4d(grid2Map(i,j)(0),grid2Map(i,j)(1),TAKEOFF_HEIGHT,0);
-            w.hover_time = 2;
-            fpath.waypoints_.emplace_back(w);
+            w.hover_time = 1;
+            w.run_time = 2;
+            fpath.waypoints_.push_back(w);
         }
         /* 7. 复位索引 */
         current_index = 0;
@@ -374,6 +347,15 @@ const Eigen::Vector4d& MissionManager::getCurrentWaypoint()
         return fpath.waypoints_[current_index].xyzy_map;
     }
     return null_waypoint;
+}
+
+const double MissionManager::getRuntime()
+{
+    if (current_index >= 0 && current_index < fpath.steps)
+    {
+        return fpath.waypoints_[current_index].run_time;
+    }
+    return 0;
 }
 
 int MissionManager::getCurrentIndex()
@@ -449,6 +431,21 @@ std::string MissionManager::getBitmapHash(const std::bitset<63>& bm) const
     return hash_str;
 }
 
+Eigen::Vector2d MissionManager::grid2Map(int i, int j)
+{
+    // 网格中心为原点：横向索引i∈[0,8], 纵向索引j∈[0,6]
+    double x = (i - 4) * 0.5; // 1网格=50cm=0.5m，中心偏移
+    double y = (j - 3) * 0.5; 
+    return Eigen::Vector2d(x, y); 
+}
+
+std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
+{
+    int i = static_cast<int>(std::round(map_pos.x() * 2 + 4));
+    int j = static_cast<int>(std::round(map_pos.y() * 2 + 3));
+    return {i, j};
+}
+
 FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_private)
     :nh(nh_),nh_private(nh_private),rate(150),initial_flag(false)
 {
@@ -467,6 +464,7 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     set_DebugTarget_server = nh.advertiseService("FlightCtrl/SetDebugTarget",&FlightCore::set_DebugTarget_Callback,this);
     set_DebugTarget_client = nh.serviceClient<flight_ctrl::SetDebugTarget>("FlightCtrl/SetDebugTarget");
     kill_trigger_server = nh.advertiseService("FlightPanel/RequestShutdown",&FlightCore::kill_trigger_Callback, this);
+    get_NoFlyZone_server = nh.advertiseService("FlightPanel/GetNoFlyZone",&FlightCore::get_NoFlyZone_Callback, this);
 
     mode_change_msg.request.custom_mode = "OFFBOARD";
     arming_request_msgs.request.value = true;
@@ -484,10 +482,14 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     vins_err_vel_The = VINS_ERR_THE_VEL;
     vins_drifted = false;
 
-    move.setTimeout(TIMEOUT);
+    //move.setTimeout(TIMEOUT);
     move.setErr(POS_ERR,YAW_ERR);
 
-    mission.loadMission("hash");
+    // std::vector<std::string> zones = {"A5B1", "A6B1", "A7B1"};
+    std::bitset<63> bm = mission.setNoFlyZones(zones);
+    std::string hash = mission.getBitmapHash(bm);
+    mission.loadMission(hash);
+    ROS_INFO("Generated hash: %s", hash.c_str());
 
     last_request = ros::Time::now();
 }
@@ -527,50 +529,27 @@ void FlightCore::vins_position_Callback(const nav_msgs::Odometry::ConstPtr& msg)
                              reference_position_cb.pose.position.y,
                              reference_position_cb.pose.position.z);
     Eigen::Vector3d curr_map = move.enu2Map_pos(curr_enu);
-    Eigen::Vector2d ref(
-    curr_map(0),
-    curr_map(1)
-    );
-    Eigen::Vector2d vins(
-        vins_position_cb.pose.pose.position.x,
-        vins_position_cb.pose.pose.position.y
-    );
-    Eigen::Vector2d err = ref - vins;
-    vins_err = err.norm();
-
     ROS_INFO_THROTTLE(0.5,"map_x_pos: %.3f , map_y_pos: %.3f , vins_x_pos: %.3f , vins_y_pos: %.3f",curr_map(0),curr_map(1),vins_position_cb.pose.pose.position.x,vins_position_cb.pose.pose.position.y);
-
-
-    bool pos_ok = std::abs(err(0)) > vins_err_pos_The || std::abs(err(1)) > vins_err_pos_The || vins_err > vins_err_pos_The * 1.4;
+    bool pos_ok = std::abs(vins_position_cb.pose.pose.position.x) > vins_err_pos_The || std::abs(vins_position_cb.pose.pose.position.y) > vins_err_pos_The;
 
     curr_enu = Eigen::Vector3d(reference_velocity_cb.twist.linear.x,
                             reference_velocity_cb.twist.linear.y,
                             reference_velocity_cb.twist.linear.z);
     curr_map = move.enu2Map_vel(curr_enu);
-    ref = Eigen::Vector2d(
-        curr_map(0),
-        curr_map(1)
-    );
-    vins = Eigen::Vector2d(
-        vins_position_cb.twist.twist.linear.x,
-        vins_position_cb.twist.twist.linear.y
-    );
-    err = ref - vins;
 
     ROS_INFO_THROTTLE(0.5,"map_x_vel: %.3f , map_y_vel: %.3f , vins_x_vel: %.3f , vins_y_vel: %.3f",curr_map(0),curr_map(1),vins_position_cb.twist.twist.linear.x,vins_position_cb.twist.twist.linear.y);
+    bool vel_ok = std::abs(vins_position_cb.twist.twist.linear.x) > vins_err_vel_The || std::abs(vins_position_cb.twist.twist.linear.x) > vins_err_vel_The;
 
-    bool vel_ok = std::abs(err(0)) > vins_err_vel_The || std::abs(err(1)) > vins_err_vel_The || err.norm() > vins_err_vel_The * 1.4;
+    if(use_vins && (pos_ok||vel_ok))
+    {
+        emergency_pos = reference_position_cb;
+        vins_drifted = true;
+        ROS_INFO("vins drifted...change to land");
 
-    // if(use_vins && (pos_ok||vel_ok))
-    // {
-    //     emergency_pos = reference_position_cb;
-    //     vins_drifted = true;
-    //     ROS_INFO("vins drifted...change to land");
-
-    //     FT = Land;
-    //     is_changed = true;
-    //     cache_pos = getNowPose();
-    // }
+        FT = Land;
+        is_changed = true;
+        cache_pos = getNowPose();
+    }
 
 } 
 
@@ -646,10 +625,18 @@ bool FlightCore::set_DebugTarget_Callback(flight_ctrl::SetDebugTarget::Request& 
     return true;
 }
 
-bool FlightCore::kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request&,flight_ctrl::TriggerShutdown::Response& res)
+bool FlightCore::kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request& req,flight_ctrl::TriggerShutdown::Response& res)
 {
     ROS_INFO("Shutdown requested. Exiting...");
     ros::shutdown();   // Ctrl 节点自毁
+    res.success = true;
+    return true;
+}
+
+bool FlightCore::get_NoFlyZone_Callback(flight_ctrl::GetNoFlyZone::Request& req,flight_ctrl::GetNoFlyZone::Response& res)
+{
+    
+    zones = {req.np1,req.np2,req.np3};
     res.success = true;
     return true;
 }
@@ -772,19 +759,6 @@ void FlightCore::statusloop_Callback()
         else ROS_INFO("Arm Failed");
         last_request = ros::Time::now();
     }
-
-    // 当前 ENU 坐标
-    Eigen::Vector3d curr_enu(reference_position_cb.pose.position.x,
-                             reference_position_cb.pose.position.y,
-                             reference_position_cb.pose.position.z);
-    // 转到 Map 坐标系
-    Eigen::Vector3d curr_map = move.enu2Map_pos(curr_enu);
-    double curr_yaw_enu = tf2::getYaw(reference_position_cb.pose.orientation);
-    double curr_yaw_map = move.enu2Map_yaw(curr_yaw_enu);
-
-    // ROS_INFO_THROTTLE(0.1,
-    //     "[STATUS] Map Pose: x=%.3f  y=%.3f  err=%.2f ",
-    //     vins_position_cb.pose.pose.position.x,vins_position_cb.pose.pose.position.y,vins_err);
 }
 
 void FlightCore::cmd_Task_Standby()
@@ -801,11 +775,12 @@ void FlightCore::cmd_Task_Standby()
 
 void FlightCore::cmd_Task_Land()
 {
-        is_changed = false;
-        Eigen::Vector3d target_pos(round_(cache_pos.pose.position.x),round_(cache_pos.pose.position.y),round_(getNowPose().pose.position.z-0.15));
-        double target_yaw = tf2::getYaw(cache_pos.pose.orientation) * 180.0 / M_PI;
-        move.setTarget(target_pos,target_yaw);
-        pub_vel = move.compute(getNowPose());
+
+    is_changed = false;
+    Eigen::Vector3d target_pos(round_(cache_pos.pose.position.x),round_(cache_pos.pose.position.y),round_(getNowPose().pose.position.z-0.15));
+    double target_yaw = tf2::getYaw(cache_pos.pose.orientation) * 180.0 / M_PI;
+    move.setTarget(target_pos,target_yaw);
+    pub_vel = move.compute(getNowPose());
 
     if(getNowPose().pose.position.z <= 0.25 && !land_flag)
     {
@@ -817,9 +792,6 @@ void FlightCore::cmd_Task_Land()
 
     if(ros::Time::now() - land_time >= ros::Duration(1))
     {
-        // mavros_msgs::CommandBool arming_request_msgs_;
-        // arming_request_msgs_.request.value = false;
-        // arming_request_client.call(arming_request_msgs_);
         mode_change_msg.request.custom_mode = "AUTO.LAND";
         mode_change_client.call(mode_change_msg);
     }
@@ -852,10 +824,11 @@ void FlightCore::cmd_Task_Mission()
 
     if(mission.getCurrentIndex() != last_index)
     {
+        double runtime = mission.getRuntime();
         Eigen::Vector4d tar = mission.getCurrentWaypoint();
         Eigen::Vector3d target_pos(tar(0),tar(1),tar(2));
         double target_yaw = tar(3);
-        move.setTarget(target_pos,target_yaw);
+        move.setTarget(target_pos,target_yaw,runtime);
         ROS_INFO("[MISSION] Setting new target: map_pos[%.2f, %.2f, %.2f], yaw %.2f ", 
                  target_pos(0), target_pos(1), target_pos(2), target_yaw);
         last_index = mission.getCurrentIndex();
@@ -871,10 +844,7 @@ void FlightCore::cmd_Task_Mission()
     {
         if(move.isTimeout(ros::Time::now()))
         {
-            ROS_WARN("[MISSION] Timeout at waypoint %d, switching to Standby", mission.getCurrentIndex());
-            // FT = Standby;
-            // cache_pos = getNowPose();
-            // is_changed = true;
+            ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point", mission.getCurrentIndex());
             mission.nextWaypoint();
         }
     }

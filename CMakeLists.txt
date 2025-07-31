@@ -82,6 +82,7 @@ add_service_files(
   SetDebugTarget.srv
   TriggerShutdown.srv
   StartHover.srv
+  GetNoFlyZone.srv
 )
 
 ## Generate actions in the 'action' folder

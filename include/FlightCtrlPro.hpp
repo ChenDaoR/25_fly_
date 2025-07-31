@@ -25,18 +25,21 @@
 #include <flight_ctrl/SetFlightTask_Topic.h>
 #include <flight_ctrl/SetDebugTarget.h>
 #include <flight_ctrl/TriggerShutdown.h>
+#include <flight_ctrl/PidGainsConfig.h>
+#include <flight_ctrl/GetNoFlyZone.h>
 #include "pid.hpp"
 #include <bitset>
 #include <boost/crc.hpp>
 #include <boost/filesystem.hpp>
 #include <dynamic_reconfigure/server.h>
-#include <flight_ctrl/PidGainsConfig.h>
+
 
 
 struct wayPoints
 {
     //Eigen::Vector2d xy_grid;
     Eigen::Vector4d xyzy_map;
+    double run_time;
     double hover_time;
 };
 
@@ -62,6 +65,7 @@ public:
     ~MissionManager();
     bool loadMission(const std::string& hash);   
     const Eigen::Vector4d& getCurrentWaypoint();
+    const double getRuntime();
     int getCurrentIndex();
     void nextWaypoint();
     bool isFinished();
@@ -104,8 +108,7 @@ public:
     void init(const geometry_msgs::PoseStamped& ); //初始化零位姿 以及必要的量
     Eigen::Vector3d transform(const Eigen::Vector3d& );   //坐标转化外部接口
     geometry_msgs::Twist compute(const geometry_msgs::PoseStamped&);  //计算坐标输出
-    void setTarget(const Eigen::Vector3d ,const double );   //设置目标值_
-    void setTarget(const geometry_msgs::PoseStamped& );   //设置目标值_
+    void setTarget(const Eigen::Vector3d ,const double& ,const double& );   //设置目标值_
     void setErr(const double& ,const double&);    //设置容差
     void setTimeout(const double& );
     void setStartTime(const ros::Time& time);
@@ -160,6 +163,7 @@ private:
     ros::ServiceServer set_DebugTarget_server;
     ros::ServiceClient set_DebugTarget_client;//debug发点服务
     ros::ServiceServer kill_trigger_server;
+    ros::ServiceServer get_NoFlyZone_server;
     
     ros::Time last_request,land_time;//上次操作请求时间，降落时间
 
@@ -193,6 +197,8 @@ private:
     int last_index; //任务标记
     double last_pos_z;  //上次z坐标
 
+    std::vector<std::string> zones;
+
     MapMotion move;
     MissionManager mission;
 
@@ -205,6 +211,7 @@ private:
     bool set_FlightTask_Callback(flight_ctrl::SetFlightTask::Request& req,flight_ctrl::SetFlightTask::Response& res);   //飞行状态切换回调
     bool set_DebugTarget_Callback(flight_ctrl::SetDebugTarget::Request& req,flight_ctrl::SetDebugTarget::Response& res);
     bool kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request&,flight_ctrl::TriggerShutdown::Response& res); //自杀服务
+    bool get_NoFlyZone_Callback(flight_ctrl::GetNoFlyZone::Request&,flight_ctrl::GetNoFlyZone::Response& res); //自杀服务
 
     //cmdloop中不同分支的对应函数
     void cmd_Task_Standby();
