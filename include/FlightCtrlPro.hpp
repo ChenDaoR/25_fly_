@@ -26,7 +26,6 @@
 #include <flight_ctrl/SetDebugTarget.h>
 #include <flight_ctrl/TriggerShutdown.h>
 #include <flight_ctrl/PidGainsConfig.h>
-#include <flight_ctrl/GetNoFlyZone.h>
 #include "pid.hpp"
 #include <bitset>
 #include <boost/crc.hpp>
@@ -63,7 +62,7 @@ private:
 public:
     MissionManager(); 
     ~MissionManager();
-    bool loadMission(const std::string& hash);   
+    bool loadMission(const std::string& hash ,int isLand);      
     const Eigen::Vector4d& getCurrentWaypoint();
     const double getRuntime();
     int getCurrentIndex();
@@ -76,7 +75,7 @@ public:
     std::pair<int, int> mapToGrid(const Eigen::Vector3d& map_pos);
     std::bitset<63>& setNoFlyZones(const std::vector<std::string>& zones);  //设计禁飞区并且返回位图
     std::string getBitmapHash(const std::bitset<63>& bs) const; //计算哈希值
-    bool isPathBlocked(const Eigen::Vector3d& start, const Eigen::Vector3d& end);
+    bool isPathBlocked(const Eigen::Vector2d& start, const Eigen::Vector2d& end);
 
 };
 
@@ -199,11 +198,13 @@ private:
 
     int flag;
     bool isLaunched;
+    bool path_selected;
 
     std::vector<std::string> zones;
 
     MapMotion move;
     MissionManager mission;
+    MissionManager m_land;
 
     void state_Callback(const mavros_msgs::State::ConstPtr& msg);   //状态回调
     void reference_position_Callback(const geometry_msgs::PoseStamped::ConstPtr& msg);  //位置反馈回调
@@ -214,7 +215,6 @@ private:
     bool set_FlightTask_Callback(flight_ctrl::SetFlightTask::Request& req,flight_ctrl::SetFlightTask::Response& res);   //飞行状态切换回调
     bool set_DebugTarget_Callback(flight_ctrl::SetDebugTarget::Request& req,flight_ctrl::SetDebugTarget::Response& res);
     bool kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request&,flight_ctrl::TriggerShutdown::Response& res); //自杀服务
-    bool get_NoFlyZone_Callback(flight_ctrl::GetNoFlyZone::Request&,flight_ctrl::GetNoFlyZone::Response& res); //自杀服务
 
     //cmdloop中不同分支的对应函数
     void cmd_Task_Standby();

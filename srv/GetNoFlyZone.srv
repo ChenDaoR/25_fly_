@@ -1,6 +1,0 @@
-string np1
-string np2
-string np3
----
-bool success
-string message

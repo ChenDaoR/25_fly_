@@ -54,6 +54,7 @@ void FlightPanel::print_menu()
     std::cout << "║  [2] Takeoff                       ║\n";
     std::cout << "║  [3] Mission                       ║\n";
     std::cout << "║  [4] Land                          ║\n";
+    std::cout << "║  [5] M_Land                        ║\n";
     std::cout << "║  [d] Debug (按 e 退出)             ║\n";
     std::cout << "║  [p] POSITION                      ║\n";
     std::cout << "║  [l] LAND                          ║\n";    
@@ -90,6 +91,7 @@ void FlightPanel::kb_loop()
             case '2': set_flight_task("Takeoff"); break;
             case '3': set_flight_task("Mission"); break;
             case '4': set_flight_task("Land");    break;
+            case '5': set_flight_task("M_Land");    break;
             case 'd': set_flight_task("Debug"); debug_interactive(); break;
             case 'p': set_mode("POSITION"); break;
             case 'l': set_mode("AUTO.LAND"); break;

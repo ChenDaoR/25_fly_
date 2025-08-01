@@ -9,7 +9,7 @@
 #define VINS_ERR_THE_POS 10
 #define VINS_ERR_THE_VEL 3
 #define USE_VINS 0
-#define AUTO 1
+#define AUTO 0
 #define WAITDURATION 1.5
 
 MapMotion::MapMotion()
@@ -41,21 +41,21 @@ void MapMotion::init(const geometry_msgs::PoseStamped& origin_)
     ROS_INFO("[MapMotion] init done. origin=(%.2f,%.2f,%.2f) yaw=%.2f",
              origin_pos(0), origin_pos(1), origin_pos(2), origin_yaw);
 
-    x.setGains(1,0.05,0);
+    x.setGains(1.05,0.05,0);
     x.setDt(1.0 / cmdRate);
     x.setIntegralLimit(0.1);
-    x.setOutputLimit(0,0.3);
+    x.setOutputLimit(0,0.35);
     x.setAdvancedFlag(true,false,false,false);
     x.setAdvancedThreshold(0.2,0,0);
 
-    y.setGains(1,0.05,0);
+    y.setGains(1.05,0.05,0);
     y.setDt(1.0 / cmdRate);
     y.setIntegralLimit(0.1);
-    y.setOutputLimit(0,0.3);
+    y.setOutputLimit(0,0.35);
     y.setAdvancedFlag(true,false,false,false);
     y.setAdvancedThreshold(0.2,0,0);
 
-    z.setGains(1.2,0.1,0.3);
+    z.setGains(1.35,0.1,0.3);
     z.setDt(1.0 / cmdRate);
     z.setIntegralLimit(0.5);
     z.setOutputLimit(0,0.8);
@@ -122,6 +122,7 @@ void MapMotion::setTarget(const Eigen::Vector3d pos,const double& yaw_,const dou
     y.setTarget(target_pos_enu(1));
     z.setTarget(target_pos_enu(2));
     yaw.setTarget(target_yaw_enu);
+    setStartTime(ros::Time::now());
     setTimeout(time);
 
 }
@@ -283,7 +284,7 @@ MissionManager::MissionManager(){}
 
 MissionManager::~MissionManager(){}
 
-bool MissionManager::loadMission(const std::string& hash)
+bool MissionManager::loadMission(const std::string& hash, int island = 0)
 {
     // 1. 拼出完整文件名
     const std::string mission_dir = "/home/feng/Code/find_path/output";          // 可换成 ros::package::getPath 等
@@ -309,19 +310,29 @@ bool MissionManager::loadMission(const std::string& hash)
         fpath.steps = j.at("steps");
         fpath.hash = hash.c_str();
 
-        /* 6. 读取 path 并转成 map 坐标 waypoint (x,y,z,yaw)
-               约定：z = 1 m；yaw = 0°；分辨率 0.5 m，网格中心为原点
-         */
         for (const auto& p : j.at("path"))
-        {
-            if (p.size() != 2) continue;
-            int i = p[0].get<int>();   // 行
-            int j = p[1].get<int>();   // 列
-            
+        {            
             wayPoints w;
-            w.xyzy_map = Eigen::Vector4d(grid2Map(i,j)(0),grid2Map(i,j)(1),TAKEOFF_HEIGHT,0);
-            w.hover_time = 1;
-            w.run_time = 3;
+
+
+            double a = p[0].get<double>();
+            double b = p[1].get<double>();
+            w.hover_time = 0;
+            w.run_time = 0.4;
+
+            if(island == 1)
+                w.xyzy_map = Eigen::Vector4d(a,0,b,0);
+            else if(island == 2)
+                w.xyzy_map = Eigen::Vector4d(0,a,b,0);
+            else
+            {
+                int i = p[0].get<int>();   // 行
+                int j = p[1].get<int>();   // 列
+                w.xyzy_map = Eigen::Vector4d(grid2Map(i,j)(0),grid2Map(i,j)(1),TAKEOFF_HEIGHT,0);
+                w.hover_time = 1.5;
+                w.run_time = 2.5;
+            }
+            
             fpath.waypoints_.push_back(w);
         }
         /* 7. 复位索引 */
@@ -341,7 +352,7 @@ bool MissionManager::loadMission(const std::string& hash)
 const Eigen::Vector4d& MissionManager::getCurrentWaypoint()
 {
     static Eigen::Vector4d null_waypoint(0.0, 0.0, 0.0, 0.0);
-    if (current_index >= 0 && current_index < fpath.steps)
+    if (current_index >= 0 && current_index < fpath.waypoints_.size())
     {
         return fpath.waypoints_[current_index].xyzy_map;
     }
@@ -444,6 +455,35 @@ std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
     return {i, j};
 }
 
+bool MissionManager::isPathBlocked(const Eigen::Vector2d& start, const Eigen::Vector2d& end) 
+{
+    // 只考虑XY平面（禁飞区通常是二维的）
+    Eigen::Vector2d start_2d(start.x(), start.y());
+    Eigen::Vector2d end_2d(end.x(), end.y());
+    
+    // 动态计算步数：每10cm一个点，至少10个点
+    double path_length = (end_2d - start_2d).norm();
+    int steps = std::max(10, static_cast<int>(path_length / 0.1));
+    
+    for (int i = 0; i <= steps; i++)
+    {
+        double t = static_cast<double>(i) / steps;
+        Eigen::Vector2d point_2d = start_2d + (end_2d - start_2d) * t;
+        
+        // 转换为网格坐标
+        std::pair<int, int> grid = mapToGrid(Eigen::Vector3d(point_2d.x(), point_2d.y(), 0));
+        // 检查网格是否有效
+        if (grid.first < 0 || grid.second < 0) continue;
+        int idx = grid2Idx(grid);
+        // 检查位图索引范围
+        if (idx >= 0 && idx < noFlyBitmap.size() && noFlyBitmap.test(idx))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_private)
     :nh(nh_),nh_private(nh_private),rate(150),initial_flag(false)
 {
@@ -462,7 +502,6 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     set_DebugTarget_server = nh.advertiseService("FlightCtrl/SetDebugTarget",&FlightCore::set_DebugTarget_Callback,this);
     set_DebugTarget_client = nh.serviceClient<flight_ctrl::SetDebugTarget>("FlightCtrl/SetDebugTarget");
     kill_trigger_server = nh.advertiseService("FlightPanel/RequestShutdown",&FlightCore::kill_trigger_Callback, this);
-    get_NoFlyZone_server = nh.advertiseService("FlightPanel/GetNoFlyZone",&FlightCore::get_NoFlyZone_Callback, this);
 
     mode_change_msg.request.custom_mode = "OFFBOARD";
     arming_request_msgs.request.value = true;
@@ -478,12 +517,12 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     vins_err_pos_The = VINS_ERR_THE_POS;
     vins_err_vel_The = VINS_ERR_THE_VEL;
     vins_drifted = false;
-
+    path_selected = false;
     //move.setTimeout(TIMEOUT);
     move.setErr(POS_ERR,YAW_ERR);
     flag = 0;
 
-    std::vector<std::string> zones = {"A5B3", "A5B4", "A4B4"};
+    std::vector<std::string> zones = {"A3B3", "A3B4", "A4B4"};
     std::bitset<63> bm = mission.setNoFlyZones(zones);
     std::string hash = mission.getBitmapHash(bm);
     mission.loadMission(hash);
@@ -627,14 +666,6 @@ bool FlightCore::kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request& re
 {
     ROS_INFO("Shutdown requested. Exiting...");
     ros::shutdown();   // Ctrl 节点自毁
-    res.success = true;
-    return true;
-}
-
-bool FlightCore::get_NoFlyZone_Callback(flight_ctrl::GetNoFlyZone::Request& req,flight_ctrl::GetNoFlyZone::Response& res)
-{
-    
-    zones = {req.np1,req.np2,req.np3};
     res.success = true;
     return true;
 }
@@ -812,7 +843,7 @@ void FlightCore::cmd_Task_Takeoff(double h)
     {
         Eigen::Vector3d target_pos(round_(cache_pos.pose.position.x),round_(cache_pos.pose.position.y),round_(h));
         double target_yaw = tf2::getYaw(cache_pos.pose.orientation) * 180.0 / M_PI;
-        move.setTarget(target_pos,target_yaw);
+        move.setTarget(target_pos,target_yaw,10);
         is_changed = false;
     }
 
@@ -820,18 +851,11 @@ void FlightCore::cmd_Task_Takeoff(double h)
 
     if(AUTO)
     {
-        if(move.isArrived(getNowPose()))
+        if(move.isArrived(getNowPose()) || move.isTimeout(ros::Time::now()))
         {
             ROS_INFO("Takeoff has done!Now change to Mission");
             FT = Mission;
-        }
-        else
-        {
-            if(move.isTimeout(ros::Time::now()))
-            {
-                ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point", mission.getCurrentIndex());
-                mission.nextWaypoint();
-            }
+            is_changed = true;
         }
     }
 }
@@ -846,12 +870,19 @@ void FlightCore::cmd_Task_Mission()
         is_changed = true;
         mission.reset();
         last_index = -1;
+        if(AUTO)
+        {
+            FT = M_Land;
+            cache_pos = getNowPose();
+            is_changed = true;
+        }    
         return;
     }
 
+    double runtime = mission.getRuntime();
+
     if(mission.getCurrentIndex() != last_index)
     {
-        double runtime = mission.getRuntime();
         Eigen::Vector4d tar = mission.getCurrentWaypoint();
         Eigen::Vector3d target_pos(tar(0),tar(1),tar(2));
         double target_yaw = tar(3);
@@ -871,7 +902,7 @@ void FlightCore::cmd_Task_Mission()
     {
         if(move.isTimeout(ros::Time::now()))
         {
-            ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point", mission.getCurrentIndex());
+            ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point,Runtime %.3f", mission.getCurrentIndex(),runtime);
             mission.nextWaypoint();
         }
     }
@@ -883,13 +914,6 @@ void FlightCore::cmd_Task_Mission()
         Eigen::Vector4d current_wp = mission.getCurrentWaypoint();
         ROS_INFO_THROTTLE(1.0,"[MISSION] Current waypoint index: %d, target: [%.2f, %.2f, %.2f, %.2f ]", 
              mission.getCurrentIndex(), current_wp(0), current_wp(1), current_wp(2), current_wp(3));
-    }
-    else
-    {
-        if(AUTO)
-        {
-            FT = M_Land;
-        }
     }
 
 }
@@ -914,6 +938,70 @@ void FlightCore::cmd_Task_Debug()
 void FlightCore::cmd_Task_M_Land()
 {
     
+    if (!path_selected)
+    {
+        Eigen::Vector2d start_pos(0,0);
+        Eigen::Vector2d pathx_end(1.2,0);   // 沿X轴斜降
+
+        bool pathx_blocked = mission.isPathBlocked(start_pos, pathx_end);
+        if (!pathx_blocked)
+        {
+            m_land.loadMission("land",1);
+            ROS_INFO("[M_Land] Path1 (X-axis) selected for 45° descent");
+        }
+        else
+        {
+            m_land.loadMission("land",2);
+            ROS_INFO("[M_Land] Path2 (Y-axis) selected for 45° descent");
+        }
+        path_selected = true;
+        move.setErr(0.01,YAW_ERR);
+    }
+
+    if(m_land.isFinished())
+    {
+        ROS_INFO("[M_Land] Now change to land");
+        FT = Land;
+        cache_pos = getNowPose();
+        is_changed = true;
+        return;
+    }
+
+    if(m_land.getCurrentIndex() != last_index)
+    {
+        double runtime = m_land.getRuntime();
+        Eigen::Vector4d tar = m_land.getCurrentWaypoint();
+        Eigen::Vector3d target_pos(tar(0),tar(1),tar(2));
+        double target_yaw = tar(3);
+        move.setTarget(target_pos,target_yaw,runtime);
+        ROS_INFO("[M_Land] Setting new target: map_pos[%.2f, %.2f, %.2f], yaw %.2f ", 
+                 target_pos(0), target_pos(1), target_pos(2), target_yaw);
+        last_index = m_land.getCurrentIndex();
+        move.setStartTime(ros::Time::now());
+    }
+
+    if(move.isArrived(getNowPose()))
+    {
+        ROS_INFO("[M_Land]Reached waypoint %d, Moving to next waypoint %d", m_land.getCurrentIndex(), m_land.getCurrentIndex() + 1);
+        m_land.nextWaypoint();
+    }
+    else
+    {
+        if(move.isTimeout(ros::Time::now()))
+        {
+            ROS_INFO("[M_Land] Timeout at waypoint %d, go to next point", m_land.getCurrentIndex());
+            m_land.nextWaypoint();
+        }
+    }
+
+    pub_vel = move.compute(getNowPose());
+
+    if(!m_land.isFinished())
+    {
+        Eigen::Vector4d current_wp = m_land.getCurrentWaypoint();
+        ROS_INFO_THROTTLE(1.0,"[M_Land] Current waypoint index: %d, target: [%.2f, %.2f, %.2f, %.2f ]", 
+             m_land.getCurrentIndex(), current_wp(0), current_wp(1), current_wp(2), current_wp(3));
+    }
 }
 
 
