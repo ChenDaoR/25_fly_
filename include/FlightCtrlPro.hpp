@@ -31,6 +31,9 @@
 #include <boost/crc.hpp>
 #include <boost/filesystem.hpp>
 #include <dynamic_reconfigure/server.h>
+#include <std_msgs/String.h>
+#include <iostream>
+#include <sstream>
 
 
 
@@ -76,6 +79,8 @@ public:
     std::bitset<63>& setNoFlyZones(const std::vector<std::string>& zones);  //设计禁飞区并且返回位图
     std::string getBitmapHash(const std::bitset<63>& bs) const; //计算哈希值
     bool isPathBlocked(const Eigen::Vector2d& start, const Eigen::Vector2d& end);
+    std::string grid2Ab(int i, int j);
+    std::pair<int, int> getCurrentGrid();
 
 };
 
@@ -151,9 +156,11 @@ private:
     ros::Subscriber reference_position_sub; //位置反馈 包含速度信息
     ros::Subscriber reference_velocity_sub; //速度反馈
     ros::Subscriber vins_position_sub;  //vins订阅
+    ros::Subscriber serial_sub;
 
     //目标位置 目标速度 目标姿态发布
     ros::Publisher target_position_pub,target_velocity_pub,target_pose_pub;
+    ros::Publisher serial_pub;
 
     ros::ServiceClient arming_request_client;   //解锁服务
     ros::ServiceClient mode_change_client;  //模式切换服务
@@ -162,7 +169,7 @@ private:
     ros::ServiceServer set_DebugTarget_server;
     ros::ServiceClient set_DebugTarget_client;//debug发点服务
     ros::ServiceServer kill_trigger_server;
-    ros::ServiceServer get_NoFlyZone_server;
+    ros::ServiceServer go_trigger_server;
     
     ros::Time last_request,land_time;//上次操作请求时间，降落时间
 
@@ -200,7 +207,11 @@ private:
     bool isLaunched;
     bool path_selected;
 
+    bool GO;
+
     std::vector<std::string> zones;
+    bool zone_ok;
+    std_msgs::String serialPub;
 
     MapMotion move;
     MissionManager mission;
@@ -210,11 +221,14 @@ private:
     void reference_position_Callback(const geometry_msgs::PoseStamped::ConstPtr& msg);  //位置反馈回调
     void reference_velocity_Callback(const geometry_msgs::TwistStamped::ConstPtr& msg);
     void vins_position_Callback(const nav_msgs::Odometry::ConstPtr& msg);
+    void serial_sub_Callback(const std_msgs::String::ConstPtr& msg);
     void cmdloop_Callback();    //控制循环回调
     void statusloop_Callback(); //状态循环回调
     bool set_FlightTask_Callback(flight_ctrl::SetFlightTask::Request& req,flight_ctrl::SetFlightTask::Response& res);   //飞行状态切换回调
     bool set_DebugTarget_Callback(flight_ctrl::SetDebugTarget::Request& req,flight_ctrl::SetDebugTarget::Response& res);
     bool kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request&,flight_ctrl::TriggerShutdown::Response& res); //自杀服务
+    bool go_trigger_Callback(flight_ctrl::TriggerShutdown::Request&,flight_ctrl::TriggerShutdown::Response& res); //一键起飞
+    
 
     //cmdloop中不同分支的对应函数
     void cmd_Task_Standby();

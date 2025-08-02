@@ -1,16 +1,17 @@
 #include "FlightCtrlPro.hpp"
 
 #define cmdRate 150
-#define TAKEOFF_HEIGHT 1
+#define TAKEOFF_HEIGHT 0.8
 #define POS_ERR 0.1
 #define YAW_ERR 0.5
 #define DEFAULT_RUNTIME 0
 #define DEFAULT_HOVERTIME 5
 #define VINS_ERR_THE_POS 10
 #define VINS_ERR_THE_VEL 3
-#define USE_VINS 0
-#define AUTO 0
+#define USE_VINS 1
+#define AUTO 1
 #define WAITDURATION 1.5
+#define DEBUG 1
 
 MapMotion::MapMotion()
 {
@@ -41,28 +42,28 @@ void MapMotion::init(const geometry_msgs::PoseStamped& origin_)
     ROS_INFO("[MapMotion] init done. origin=(%.2f,%.2f,%.2f) yaw=%.2f",
              origin_pos(0), origin_pos(1), origin_pos(2), origin_yaw);
 
-    x.setGains(1.05,0.05,0);
+    x.setGains(1.0,0.05,0);
     x.setDt(1.0 / cmdRate);
     x.setIntegralLimit(0.1);
-    x.setOutputLimit(0,0.35);
+    x.setOutputLimit(0,0.25);
     x.setAdvancedFlag(true,false,false,false);
     x.setAdvancedThreshold(0.2,0,0);
 
-    y.setGains(1.05,0.05,0);
+    y.setGains(1.0,0.05,0);
     y.setDt(1.0 / cmdRate);
     y.setIntegralLimit(0.1);
-    y.setOutputLimit(0,0.35);
+    y.setOutputLimit(0,0.25);
     y.setAdvancedFlag(true,false,false,false);
     y.setAdvancedThreshold(0.2,0,0);
 
-    z.setGains(1.35,0.1,0.3);
+    z.setGains(1.2,0.1,0.3);
     z.setDt(1.0 / cmdRate);
     z.setIntegralLimit(0.5);
-    z.setOutputLimit(0,0.8);
+    z.setOutputLimit(0,0.9);
     z.setAdvancedFlag(false,false,true,true);
     z.setAdvancedThreshold(0,0,0.3);
 
-    yaw.setGains(0.15,0,0);
+    yaw.setGains(0.12,0,0);
     yaw.setDt(1.0 / cmdRate);
     yaw.setIntegralLimit(0);
     yaw.setOutputLimit(0,0.3);
@@ -287,7 +288,7 @@ MissionManager::~MissionManager(){}
 bool MissionManager::loadMission(const std::string& hash, int island = 0)
 {
     // 1. 拼出完整文件名
-    const std::string mission_dir = "/home/feng/Code/find_path/output";          // 可换成 ros::package::getPath 等
+    const std::string mission_dir = "/home/feng/Code/find_path/output/json";          // 可换成 ros::package::getPath 等
     const std::string file_path  = mission_dir + "/" + hash + ".json";
 
     /* 2. 打开文件 */
@@ -455,6 +456,29 @@ std::pair<int, int> MissionManager::mapToGrid(const Eigen::Vector3d& map_pos)
     return {i, j};
 }
 
+std::string MissionManager::grid2Ab(int i, int j)
+{
+    // 检查越界
+    if (i < 0 || i > 6 || j < 0 || j > 8) {
+        ROS_WARN("[grid2Ab] Invalid grid index (%d, %d)", i, j);
+        return "A0B0";  // 返回一个无效标记
+    }
+
+    int col = 8 - j;          // j=0 -> A9, j=8 -> A1
+    int row = i + 1;          // i=0 -> B1, i=6 -> B7
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "A%dB%d", col, row);
+    return std::string(buf);
+}
+
+std::pair<int, int> MissionManager::getCurrentGrid()
+{
+    Eigen::Vector4d wp = getCurrentWaypoint();
+    Eigen::Vector3d map_pos(wp(0), wp(1), wp(2));
+    return mapToGrid(map_pos);  // 复用已有函数
+}
+
 bool MissionManager::isPathBlocked(const Eigen::Vector2d& start, const Eigen::Vector2d& end) 
 {
     // 只考虑XY平面（禁飞区通常是二维的）
@@ -491,8 +515,9 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     reference_position_sub = nh.subscribe<geometry_msgs::PoseStamped>("mavros/local_position/pose",50,&FlightCore::reference_position_Callback,this,ros::TransportHints().tcpNoDelay()); 
     reference_velocity_sub = nh.subscribe<geometry_msgs::TwistStamped>("mavros/local_position/velocity_local",50,&FlightCore::reference_velocity_Callback,this,ros::TransportHints().tcpNoDelay());    
     vins_position_sub = nh.subscribe<nav_msgs::Odometry>("vins_estimator/odometry",10,&FlightCore::vins_position_Callback,this,ros::TransportHints().tcpNoDelay());
+    serial_sub = nh.subscribe<std_msgs::String>("Serial/RX",10,&FlightCore::serial_sub_Callback,this,ros::TransportHints().tcpNoDelay());
     target_velocity_pub = nh.advertise<geometry_msgs::Twist>("mavros/setpoint_velocity/cmd_vel_unstamped", 10);
-    
+    serial_pub = nh.advertise<std_msgs::String>("Serial/TX",10);
     
     arming_request_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
     mode_change_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
@@ -502,6 +527,7 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     set_DebugTarget_server = nh.advertiseService("FlightCtrl/SetDebugTarget",&FlightCore::set_DebugTarget_Callback,this);
     set_DebugTarget_client = nh.serviceClient<flight_ctrl::SetDebugTarget>("FlightCtrl/SetDebugTarget");
     kill_trigger_server = nh.advertiseService("FlightPanel/RequestShutdown",&FlightCore::kill_trigger_Callback, this);
+    go_trigger_server = nh.advertiseService("FlightPanel/GoTrigger",&FlightCore::go_trigger_Callback, this);
 
     mode_change_msg.request.custom_mode = "OFFBOARD";
     arming_request_msgs.request.value = true;
@@ -522,12 +548,17 @@ FlightCore::FlightCore(const ros::NodeHandle& nh_,const ros::NodeHandle& nh_priv
     move.setErr(POS_ERR,YAW_ERR);
     flag = 0;
 
-    std::vector<std::string> zones = {"A3B3", "A3B4", "A4B4"};
-    std::bitset<63> bm = mission.setNoFlyZones(zones);
-    std::string hash = mission.getBitmapHash(bm);
-    mission.loadMission(hash);
-    ROS_INFO("Generated hash: %s", hash.c_str());
-    isLaunched = true;
+    zone_ok = false;
+    GO = false;
+
+    if(DEBUG)
+    {
+        mission.loadMission("test01");
+    }
+
+    //std::vector<std::string> zones = {"A3B3", "A3B4", "A4B4"};
+    
+    isLaunched = false;
     last_request = ros::Time::now();
 }
 
@@ -558,6 +589,37 @@ void FlightCore::reference_velocity_Callback(const geometry_msgs::TwistStamped::
     reference_velocity_cb = *msg;
 } 
 
+void FlightCore::serial_sub_Callback(const std_msgs::String::ConstPtr& msg)
+{
+    size_t colon = msg->data.find(':');
+    if (colon == std::string::npos)
+    {
+        ROS_WARN("Malformed msg (missing ':'): %s", msg->data.c_str());
+        return;
+    }
+
+    std::string left  = msg->data.substr(0, colon);
+    std::string right = msg->data.substr(colon + 1);
+
+    if(left == "jfq")
+    {
+        ROS_ERROR("jgq2");
+        std::string token;
+        std::istringstream tokenStream(right);
+        while (std::getline(tokenStream, token, '|'))
+        {
+            zones.push_back(token);
+        }
+        zone_ok = true;
+        std::bitset<63> bm = mission.setNoFlyZones(zones);
+        std::string hash = mission.getBitmapHash(bm);
+        mission.loadMission(hash);
+        ROS_INFO("Generated hash: %s", hash.c_str());
+        serialPub.data = hash + ".jpg";
+        serial_pub.publish(serialPub);
+    }
+}
+
 void FlightCore::vins_position_Callback(const nav_msgs::Odometry::ConstPtr& msg)
 {
     vins_position_cb = *msg;
@@ -577,16 +639,16 @@ void FlightCore::vins_position_Callback(const nav_msgs::Odometry::ConstPtr& msg)
     ROS_INFO_THROTTLE(0.5,"map_x_vel: %.3f , map_y_vel: %.3f , vins_x_vel: %.3f , vins_y_vel: %.3f",curr_map(0),curr_map(1),vins_position_cb.twist.twist.linear.x,vins_position_cb.twist.twist.linear.y);
     bool vel_ok = std::abs(vins_position_cb.twist.twist.linear.x) > vins_err_vel_The || std::abs(vins_position_cb.twist.twist.linear.x) > vins_err_vel_The;
 
-    if(use_vins && (pos_ok||vel_ok))
-    {
-        emergency_pos = reference_position_cb;
-        vins_drifted = true;
-        ROS_INFO("vins drifted...change to land");
+    // if(use_vins && (pos_ok||vel_ok))
+    // {
+    //     emergency_pos = reference_position_cb;
+    //     vins_drifted = true;
+    //     ROS_INFO("vins drifted...change to land");
 
-        FT = Land;
-        is_changed = true;
-        cache_pos = getNowPose();
-    }
+    //     FT = Land;
+    //     is_changed = true;
+    //     cache_pos = getNowPose();
+    // }
 
 } 
 
@@ -670,6 +732,14 @@ bool FlightCore::kill_trigger_Callback(flight_ctrl::TriggerShutdown::Request& re
     return true;
 }
 
+bool FlightCore::go_trigger_Callback(flight_ctrl::TriggerShutdown::Request& req,flight_ctrl::TriggerShutdown::Response& res)
+{
+    GO = true;
+    ROS_INFO("出发咯");
+    res.success = true;
+    return true;
+}
+
 void FlightCore::main_loop()
 {
     ROS_INFO("waiting for imu");
@@ -679,7 +749,14 @@ void FlightCore::main_loop()
     }
     ROS_INFO("fcu has connected");
 
-    while(ros::ok())
+    ROS_INFO("waiting for zones");
+    while(!zone_ok && !DEBUG)
+    {
+        ros::spinOnce();
+    }
+    ROS_INFO("zones ok");
+
+    while(ros::ok() && (DEBUG || GO))
     {
         ros::spinOnce();
         cmdloop_Callback();
@@ -784,6 +861,7 @@ void FlightCore::statusloop_Callback()
         if(arming_request_client.call(arming_request_msgs) && arming_request_msgs.response.success)
         {
             ROS_INFO("Armed");
+            isLaunched = true;
         }
         else ROS_INFO("Arm Failed");
         last_request = ros::Time::now();
@@ -872,9 +950,11 @@ void FlightCore::cmd_Task_Mission()
         last_index = -1;
         if(AUTO)
         {
-            FT = M_Land;
+            FT = Land;
             cache_pos = getNowPose();
             is_changed = true;
+            serialPub.data = "LED1";
+            serial_pub.publish(serialPub);
         }    
         return;
     }
@@ -896,6 +976,8 @@ void FlightCore::cmd_Task_Mission()
     if(move.isArrived(getNowPose()))
     {
         ROS_INFO("[MISSION]Reached waypoint %d, Moving to next waypoint %d", mission.getCurrentIndex(), mission.getCurrentIndex() + 1);
+        serialPub.data = mission.grid2Ab(mission.getCurrentGrid().first,mission.getCurrentGrid().second);
+        serial_pub.publish(serialPub);
         mission.nextWaypoint();
     }
     else
@@ -903,6 +985,8 @@ void FlightCore::cmd_Task_Mission()
         if(move.isTimeout(ros::Time::now()))
         {
             ROS_INFO("[MISSION] Timeout at waypoint %d, go to next point,Runtime %.3f", mission.getCurrentIndex(),runtime);
+            serialPub.data = mission.grid2Ab(mission.getCurrentGrid().first,mission.getCurrentGrid().second);
+            serial_pub.publish(serialPub);
             mission.nextWaypoint();
         }
     }
@@ -913,7 +997,7 @@ void FlightCore::cmd_Task_Mission()
     {
         Eigen::Vector4d current_wp = mission.getCurrentWaypoint();
         ROS_INFO_THROTTLE(1.0,"[MISSION] Current waypoint index: %d, target: [%.2f, %.2f, %.2f, %.2f ]", 
-             mission.getCurrentIndex(), current_wp(0), current_wp(1), current_wp(2), current_wp(3));
+        mission.getCurrentIndex(), current_wp(0), current_wp(1), current_wp(2), current_wp(3));
     }
 
 }
@@ -964,6 +1048,8 @@ void FlightCore::cmd_Task_M_Land()
         FT = Land;
         cache_pos = getNowPose();
         is_changed = true;
+        serialPub.data = "LED2";
+        serial_pub.publish(serialPub);
         return;
     }
 

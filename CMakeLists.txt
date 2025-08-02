@@ -201,6 +201,11 @@ target_link_libraries(panel
   ${catkin_LIBRARIES}
 )
 
+add_executable(serial src/serial.cpp)
+target_link_libraries(serial
+  ${catkin_LIBRARIES}
+)
+
 
 # add_executable(serial_communacation src/serial_communication.cpp.cpp)
 # target_link_libraries(serial_communacation
